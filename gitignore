@@ -1,0 +1,59 @@
+# Python — scoped to repo root only so we don't accidentally match Next.js src/lib/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+/env/
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment variables
+.env
+
+# Database
+qdrant_storage/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific — Data not published
+Data/
+**/__pycache__/
+*.log
+
+# Frontend env files (auto-generated SECRETs, NEXTAUTH_SECRET, etc.)
+app/nextjs-app/.env.local
+app/nextjs-app/.env*.local
+
+# LangGraph checkpoints
+checkpoints/
+*.db
+*.sqlite
+*.sqlite3
+
+# Next.js
+app/nextjs-app/node_modules/
+app/nextjs-app/.next/
+
+# Documentation and Research — not published
+doc/
+research/
+app/nextjs-app.bak/
+
