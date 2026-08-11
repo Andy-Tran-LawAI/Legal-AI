@@ -1,20 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-clean_thongtu_pdfs.py — Giai đoạn 2: Trích xuất và làm sạch dữ liệu Thông tư
-========================================================================
-NÂNG CẤP v2.0:
-  - Fix: Duplicate text + table (bbox exclusion)
-  - Fix: BASE_DIR Colab-compatible
-  - Fix: Line-merging không nhầm heading
-  - Thêm: Blacklist file
-  - Thêm: Per-file strategy (TT30/46: bỏ mẫu biểu; TT51: merge vào TT79)
-  - Thêm: Output path collision fix (dùng rel_path đầy đủ)
-  - Thêm: Logging + Stats + tqdm
+clean_thongtu_pdfs.py — Giai đoạn 2: Trích xuất và làm sạch dữ liệu Thông tư Ngân hàng
+================================================================--------------------
+PHIÊN BẢN CẬP NHẬT: Tích hợp Hệ thống 25 Thông tư Ngân hàng Nhà nước Việt Nam
 """
 
 import os
 import re
-import shutil
 import unicodedata
 import logging
 import json
@@ -54,7 +46,7 @@ LOG_DIR     = BASE_DIR / "logs"
 # ---------------------------------------------------------------------------
 def setup_logging():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOG_DIR / f"clean_thongtu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = LOG_DIR / f"clean_thongtu_nganhang_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -70,120 +62,79 @@ logger = setup_logging()
 # ---------------------------------------------------------------------------
 # Blacklist
 # ---------------------------------------------------------------------------
-EXCLUDED_FILES = {
-    "nd17_2026_sua_doi_bo_sung.pdf",
-    "nd81_2026_XuPhat_DuongSat.pdf",
-    "TT130_2025_BTC_LePhi_CapBang.pdf",
-}
+EXCLUDED_FILES = set()
 
 # ---------------------------------------------------------------------------
-# Per-file strategy
+# Per-file strategy cho Danh sách Thông tư Ngân hàng
 # ---------------------------------------------------------------------------
 FILE_STRATEGIES = {
-    # TT79/2024: Thông tư về đăng ký xe — giữ toàn bộ, là văn bản gốc
-    "tt79_2024_GOC.pdf": {
+    # nhóm Thanh toán & Tài khoản
+    "tt15_2024_dich_vu_thanh_toan_khong_dung_tien_mat.pdf": {"keep_all": True},
+    "tt18_2024_hoat_dong_the_ngan_hang.pdf": {"keep_all": True},
+    "tt17_2024_mo_va_su_dung_tai_khoan_thanh_toan.pdf": {"keep_all": True},
+    "tt25_2025_sua_doi_tt17_tai_khoan_thanh_toan.pdf": {
         "keep_all": True,
-        "convert_images_to_text": True,  # Ghi chú: ảnh biển số → mô tả văn bản
+        "merge_into": "tt17_2024_mo_va_su_dung_tai_khoan_thanh_toan.md",
+        "prepend_marker": "\n\n---\n## [SỬA ĐỔI BỔ SUNG — THÔNG TƯ 25/2025/TT-NHNN]\n\n"
     },
+    "tt40_2024_trung_gian_thanh_toan.pdf": {"keep_all": True},
+    "tt41_2024_giam_sat_he_thong_thanh_toan.pdf": {"keep_all": True},
 
-    # TT51/2025: Sửa đổi TT79 — sau khi xử lý, MERGE vào output của TT79
-    "tt51_2025.pdf": {
+    # Nhóm Tín dụng & Cho vay
+    "tt39_2016_cho_vay_to_chuc_tin_dung.pdf": {"keep_all": True},
+    "tt06_2023_sua_doi_tt39_cho_vay.pdf": {
         "keep_all": True,
-        "merge_into": "tt79_2024_GOC.md",
-        "prepend_marker": "\n\n---\n## [SỬA ĐỔI BỔ SUNG — TT 51/2025]\n\n",
+        "merge_into": "tt39_2016_cho_vay_to_chuc_tin_dung.md",
+        "prepend_marker": "\n\n---\n## [SỬA ĐỔI BỔ SUNG — THÔNG TƯ 06/2023/TT-NHNN]\n\n"
+    },
+    "tt12_2024_sua_doi_tt39_cho_vay.pdf": {
+        "keep_all": True,
+        "merge_into": "tt39_2016_cho_vay_to_chuc_tin_dung.md",
+        "prepend_marker": "\n\n---\n## [SỬA ĐỔI BỔ SUNG — THÔNG TƯ 12/2024/TT-NHNN]\n\n"
     },
 
-    # TT12/2025 (BCA): Bỏ sổ nội bộ, chỉ giữ mẫu đơn học/đổi GPLX
-    "TT12_2025_BCA_GPLX.pdf": {
-        "keep_all": False,
-        "include_section_keywords": [
-            "mẫu đơn", "đề nghị", "giấy phép lái xe", "đổi gplx",
-            "học lái xe", "thi sát hạch", "lệ phí"
-        ],
-        "exclude_section_keywords": [
-            "sổ theo dõi nội bộ", "biên bản kiểm tra",
-            "phiếu kiểm soát", "báo cáo định kỳ"
-        ],
+    # Nhóm Đại lý thanh toán
+    "tt07_2024_dai_ly_thanh_toan.pdf": {"keep_all": True},
+    "tt06_2025_sua_doi_tt07_dai_ly_thanh_toan.pdf": {
+        "keep_all": True,
+        "merge_into": "tt07_2024_dai_ly_thanh_toan.md",
+        "prepend_marker": "\n\n---\n## [SỬA ĐỔI BỔ SUNG — THÔNG TƯ 06/2025/TT-NHNN]\n\n"
     },
 
-    # TT35/2024 (BGTVT): Tương tự TT12
-    "TT35_2024_BGTVT_GPLX.pdf": {
-        "keep_all": False,
-        "include_section_keywords": [
-            "mẫu đơn", "đề nghị", "giấy phép lái xe",
-            "học lái xe", "thi", "lệ phí", "hồ sơ"
-        ],
-        "exclude_section_keywords": [
-            "sổ theo dõi", "biên bản kiểm tra nội bộ",
-            "phiếu kiểm soát thiết bị"
-        ],
-    },
+    # Nhóm Huy động vốn, Tiền gửi, Lãi suất
+    "tt49_2018_tien_gui_co_ky_han.pdf": {"keep_all": True},
+    "tt48_2018_tien_gui_tiet_kiem.pdf": {"keep_all": True},
+    "tt48_2024_lai_suat_tien_gui_vnd.pdf": {"keep_all": True},
+    "tt02_2025_phat_hanh_chung_chi_tien_gui.pdf": {"keep_all": True},
 
-    # TT155/2025: Giữ bảng lệ phí, bỏ phụ lục không có số liệu
-    "tt155_2025.pdf": {
-        "keep_all": False,
-        "include_section_keywords": [
-            "lệ phí", "mức thu", "phí", "biểu phí", "thu nộp"
-        ],
-        "exclude_section_keywords": [
-            "phụ lục mẫu", "biên bản", "quy trình nội bộ"
-        ],
+    # Nhóm Ngoại hối, An toàn hệ thống, Mạng lưới & Khác
+    "tt06_2019_dau_tu_truc_tiep_ngoai_hoi.pdf": {"keep_all": True},
+    "tt09_2020_an_toan_he_thong_thong_tin.pdf": {"keep_all": True},
+    "tt50_2024_an_toan_bao_mat_dich_vu_truc_tuyen.pdf": {"keep_all": True},
+    "tt64_2024_giao_dien_lap_trinh_ung_dung_mo.pdf": {"keep_all": True},
+    "tt32_2024_mang_luoi_ngan_hang_thuong_mai.pdf": {"keep_all": True},
+    "tt08_2025_sua_doi_mang_luoi_va_phong_giao_dich.pdf": {
+        "keep_all": True,
+        "merge_into": "tt32_2024_mang_luoi_ngan_hang_thuong_mai.md",
+        "prepend_marker": "\n\n---\n## [SỬA ĐỔI BỔ SUNG — THÔNG TƯ 08/2025/TT-NHNN]\n\n"
     },
-
-    # TT30/2024 & TT46/2024: BỎ mẫu biểu kiểm tra thiết bị nội bộ
-    "TT30_2024_KiemDinh.pdf": {
-        "keep_all": False,
-        "include_section_keywords": [
-            "chu kỳ kiểm định", "phân loại lỗi", "tiêu chuẩn",
-            "kiểm định an toàn", "điều kiện kỹ thuật"
-        ],
-        "exclude_section_keywords": [
-            "mẫu biên bản kiểm tra thiết bị", "phiếu kiểm soát nội bộ",
-            "sổ theo dõi bảo dưỡng"
-        ],
-    },
-    "TT46_2024_KiemDinh.pdf": {
-        "keep_all": False,
-        "include_section_keywords": [
-            "chu kỳ kiểm định", "phân loại lỗi", "MaD", "MiD", "DD",
-            "tiêu chuẩn kỹ thuật"
-        ],
-        "exclude_section_keywords": [
-            "mẫu biên bản", "phiếu kiểm soát nội bộ", "sổ theo dõi"
-        ],
-    },
-
-    # TT47 & TT48/2024: Giữ nguyên bảng chu kỳ & phân loại lỗi
-    "TT47_2024.pdf": {"keep_all": True},
-    "TT48_2024.pdf": {"keep_all": True},
-
-    # TT92/2025 & TT70: Khí thải — trích ngưỡng nồng độ
-    "TT92_2025_KhiThai.pdf": {
-        "keep_all": False,
-        "include_section_keywords": [
-            "nồng độ", "ngưỡng", "$$CO$$", "$$HC$$", "$$NOx$$",
-            "tiêu chuẩn khí thải", "euro"
-        ],
-    },
-    "TT70_KhiThai.pdf": {
-        "keep_all": False,
-        "include_section_keywords": [
-            "nồng độ khí thải", "$$CO$$", "$$HC$$", "mức giới hạn", "tiêu chuẩn"
-        ],
-    },
+    "tt61_2024_bao_lanh_ngan_hang.pdf": {"keep_all": True},
+    "tt38_2024_hoat_dong_tu_van_tctd.pdf": {"keep_all": True},
+    "tt14_2025_ty_le_an_toan_von_nhtm.pdf": {"keep_all": True},
+    "tt09_2023_huong_dan_phong_chong_rua_tien.pdf": {"keep_all": True},
 }
 
 # ---------------------------------------------------------------------------
 # Regex
 # ---------------------------------------------------------------------------
 RE_HEADER_NOISE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4},.*about:blank$", re.MULTILINE)
-RE_FOOTER_NOISE = re.compile(r"about:blank\s+\d+/\d+|Thư viện pháp luật|Mã tra cứu", re.IGNORECASE)
+RE_FOOTER_NOISE = re.compile(r"about:blank\s+\d+/\d+|Thư viện pháp luật|Mã tra cứu|CỔNG THÔNG TIN ĐIỆN TỬ", re.IGNORECASE)
 RE_PAGE_NUM     = re.compile(r"^(Trang\s+)?\d+(\s*/\s*\d+)?$", re.IGNORECASE)
 RE_FORM_DOTS    = re.compile(r"(\.{5,}|_{5,})")
 RE_CHECKBOX     = re.compile(r"([☐☑\uf06f])")
 RE_IS_HEADING   = re.compile(
     r"^(Điều\s+\d+|Khoản\s+\d+|Chương\s+[IVXLCDM]+|Phần\s+[IVXLCDM]+|"
-    r"\d+\.\s+[A-ZĐÀÁẠẢÃ]|[a-z]\)\s+)",
+    r"Mục\s+\d+|\d+\.\s+[A-ZĐÀÁẠẢÃ]|[a-z]\)\s+)",
     re.IGNORECASE
 )
 RE_MERGE_END    = re.compile(
@@ -233,7 +184,7 @@ def clean_text(raw_text: str, strategy: dict | None = None) -> str:
         if not line:                        continue
         if RE_HEADER_NOISE.match(line):     continue
         if RE_FOOTER_NOISE.search(line):    continue
-        if RE_PAGE_NUM.match(line):          continue
+        if RE_PAGE_NUM.match(line):         continue
         line = RE_FORM_DOTS.sub(" [Cần điền thông tin] ", line)
         line = RE_CHECKBOX.sub(" [Lựa chọn] ", line).strip()
         if line in ("", "[Cần điền thông tin]", "[Lựa chọn]"):
@@ -241,12 +192,13 @@ def clean_text(raw_text: str, strategy: dict | None = None) -> str:
 
         line = re.sub(r"^(Chương\s+[IVXLCDM]+.*|Phần\s+[IVXLCDM]+.*)$",
                       r"# \1", line, flags=re.IGNORECASE)
+        line = re.sub(r"^(Mục\s+\d+.*)$",
+                      r"## \1", line, flags=re.IGNORECASE)
         line = re.sub(r"^(Điều\s+\d+[.:].*)",
-                      lambda m: "## " + m.group(0).lstrip("# "),
+                      lambda m: "### " + m.group(0).lstrip("# "),
                       line, flags=re.IGNORECASE)
         line = re.sub(r"(ngày\s+\d{1,2}\s+tháng\s+\d{1,2}\s+năm\s+\d{4})",
                       r"**\1**", line, flags=re.IGNORECASE)
-        line = re.sub(r"\b(CO2?|HC|NOx|PM2\.5|mg/l)\b", r"$$\1$$", line)
         cleaned_lines.append(line)
 
     merged_lines = []
@@ -302,7 +254,6 @@ def table_to_markdown(table_data: list) -> str:
 # Xử lý một file PDF
 # ---------------------------------------------------------------------------
 def process_single_pdf(pdf_path: Path, output_dir: Path, strategy: dict) -> dict:
-    """Xử lý một file, trả về stats dict."""
     full_content = []
     page_count = table_count = char_count = filtered_blocks = 0
 
@@ -336,18 +287,17 @@ def process_single_pdf(pdf_path: Path, output_dir: Path, strategy: dict) -> dict
     out_name = pdf_path.stem + ".md"
     out_path = output_dir / out_name
 
-    # Nếu có merge_into: append vào file đích thay vì tạo file mới
     merge_target = strategy.get("merge_into")
     if merge_target:
-        target_path = output_dir.parent / merge_target   # thư mục thongtu root
+        target_path = output_dir / merge_target
         if target_path.exists():
             marker = strategy.get("prepend_marker", "\n\n---\n## [SỬA ĐỔI BỔ SUNG]\n\n")
             with open(target_path, "a", encoding="utf-8") as f:
                 f.write(marker)
                 f.write("\n\n".join(full_content))
-            logger.info(f"   ✓ Merged {pdf_path.name} → {target_path.name}")
+            logger.info(f"    ✓ Merged {pdf_path.name} → {target_path.name}")
         else:
-            logger.warning(f"   ⚠ Không tìm thấy target merge: {target_path}, lưu riêng")
+            logger.warning(f"    ⚠ Không tìm thấy target merge: {target_path}, lưu riêng")
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write("\n\n".join(full_content))
     else:
@@ -366,21 +316,19 @@ def process_single_pdf(pdf_path: Path, output_dir: Path, strategy: dict) -> dict
 def process_pdfs():
     CLEANED_DIR.mkdir(parents=True, exist_ok=True)
 
-    # rglob để bắt cả thư mục con
     pdf_files = list(RAW_DIR.rglob("*.pdf"))
     logger.info(f"Tìm thấy {len(pdf_files)} file thông tư trong {RAW_DIR}")
 
     stats = {"total": len(pdf_files), "processed": 0, "skipped": 0, "errors": 0, "files": {}}
 
-    for pdf_path in tqdm(pdf_files, desc="Xử lý Thông tư", unit="file"):
+    for pdf_path in tqdm(pdf_files, desc="Xử lý Thông tư Ngân hàng", unit="file"):
         if pdf_path.name in EXCLUDED_FILES:
             logger.info(f"  [SKIP] {pdf_path.name}")
             stats["skipped"] += 1
             continue
 
-        # --- FIX output path collision: dùng rel_path đầy đủ ---
         rel_path   = pdf_path.relative_to(RAW_DIR)
-        output_dir = CLEANED_DIR / rel_path.parent      # giữ nguyên cấu trúc thư mục con
+        output_dir = CLEANED_DIR / rel_path.parent
         output_dir.mkdir(parents=True, exist_ok=True)
 
         strategy = FILE_STRATEGIES.get(pdf_path.name, {"keep_all": True})
@@ -391,12 +339,12 @@ def process_pdfs():
             stats["processed"] += 1
             stats["files"][str(rel_path)] = file_stats
             logger.info(
-                f"   ✓ {pdf_path.stem}.md | "
+                f"    ✓ {pdf_path.stem}.md | "
                 f"{file_stats['pages']}tr | {file_stats['tables']}bảng | "
                 f"{file_stats['chars']:,}ký tự | {file_stats['filtered_blocks']} blocks lọc"
             )
         except Exception as e:
-            logger.error(f"   ✗ Lỗi {rel_path}: {e}", exc_info=True)
+            logger.error(f"    ✗ Lỗi {rel_path}: {e}", exc_info=True)
             stats["errors"] += 1
 
     logger.info("\n" + "="*60)
