@@ -1,15 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-clean_nghidinh_pdfs.py — Giai đoạn 2: Trích xuất và làm sạch dữ liệu Nghị định
-==================================================================================================
-NÂNG CẤP v2.0:
-  - Fix: Loại bỏ duplicate text + table (bbox-based exclusion)
-  - Fix: BASE_DIR tương thích Colab + local
-  - Fix: Line-merging không nhầm tiêu đề Điều/Khoản
-  - Thêm: Blacklist file bị loại hoàn toàn
-  - Thêm: Per-file strategy (lọc mảng pháp luật cho nd100, nd123)
-  - Thêm: Logging + Statistics + tqdm
-  - Thêm: Ghi chú số điểm trừ từ bảng (nd168)
+clean_nghidinh_pdfs.py — Giai đoạn 2: Trích xuất và làm sạch dữ liệu Nghị định Ngân hàng
+================================================================----------------------
+PHIÊN BẢN CHUYỂN ĐỔI: Chuyên biệt cho Hệ thống Nghị định Ngành Ngân hàng - Tài chính
 """
 
 import os
@@ -43,17 +36,17 @@ def get_base_dir() -> Path:
     except NameError:
         return Path(".").resolve().parent.parent
 
-BASE_DIR   = get_base_dir()
-RAW_DIR    = BASE_DIR / "Data" / "raw"     / "nghidinh"
+BASE_DIR    = get_base_dir()
+RAW_DIR     = BASE_DIR / "Data" / "raw"     / "nghidinh"
 CLEANED_DIR = BASE_DIR / "Data" / "cleaned" / "nghidinh"
-LOG_DIR    = BASE_DIR / "logs"
+LOG_DIR     = BASE_DIR / "logs"
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 def setup_logging():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOG_DIR / f"clean_nghidinh_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = LOG_DIR / f"clean_nghidinh_nganhang_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -67,97 +60,82 @@ def setup_logging():
 logger = setup_logging()
 
 # ---------------------------------------------------------------------------
-# Blacklist
+# Blacklist — Các file PDF KHÔNG xử lý
 # ---------------------------------------------------------------------------
 EXCLUDED_FILES = {
-    "nd17_2026_sua_doi_bo_sung.pdf",    # Hàng không
-    "TT130_2025_BTC_LePhi_CapBang.pdf", # BQP
-    # NOTE: nd81_2026_XuPhat_DuongSat.pdf — KEEP (added 2026-05-19): Điều 13
-    # quy định xử phạt người điều khiển phương tiện đường bộ tại đường ngang
-    # đường sắt (có tước GPLX). Strategy below filters to relevant articles.
+    # Ví dụ: Nghị định 101/2012/NĐ-CP đã hết hiệu lực hoàn toàn từ 01/07/2024
+    "nd101_2012_thanh_toan_khong_dung_tien_mat_het_hieu_luc.pdf",
 }
 
 # ---------------------------------------------------------------------------
-# Per-file strategy
+# Per-file strategy cho Hệ thống Nghị định Ngân hàng - Tài chính
 # ---------------------------------------------------------------------------
-# nd100 và nd123: chỉ giữ lại nội dung KHÔNG thuộc mảng đường bộ
-# (đường bộ đã được thay thế bởi nd168 và nd336)
-#
-# Cách lọc: nếu một block text chứa bất kỳ từ khóa "include_keywords"
-# → giữ lại; nếu chứa "exclude_keywords" → bỏ.
-# Với keep_all=True → không filter gì cả.
-
 FILE_STRATEGIES = {
-    "nd168_2024_XuPhat_TruDiem_DB_baibo_nd100.pdf": {
-        "keep_all": True,
-        "annotate_diem_tru": True,  # Ghi chú số điểm trừ vào bảng
-    },
-    "nd336_2025_xu_phat_van_tai.pdf": {
+    # 1. Nghị định 94/2025/NĐ-CP: Cơ chế thử nghiệm có kiểm soát (Regulatory Sandbox)
+    "nd94_2025_co_che_thu_nghiem_ngan_hang.pdf": {
         "keep_all": True,
     },
-    "nd81_2026_XuPhat_DuongSat.pdf": {
-        # Keep all — most articles are about railway industry, but Điều 13
-        # ("quy tắc giao thông tại đường ngang") explicitly governs đường bộ
-        # drivers (with GPLX revocation). Filtering would risk losing it.
-        # Downstream metadata `topic` distinguishes railway-industry vs
-        # road-driver articles for retrieval scoping.
+    
+    # 2. Nghị định 52/2024/NĐ-CP: Thanh toán không dùng tiền mặt
+    "nd52_2024_thanh_toan_khong_dung_tien_mat.pdf": {
         "keep_all": True,
     },
-    "nd100_2019_xu_phat.pdf": {
-        "keep_all": False,
+    
+    # 3. Nghị định 88/2019/NĐ-CP: Xử phạt VPHC lĩnh vực tiền tệ và ngân hàng
+    "nd88_2019_xu_phat_tien_te_ngan_hang.pdf": {
+        "keep_all": True,
+    },
+    
+    # 4. Nghị định 143/2021/NĐ-CP: Sửa đổi, bổ sung NĐ 88/2019/NĐ-CP
+    "nd143_2021_sua_doi_nd88_xu_phat.pdf": {
+        "keep_all": True,
         "prepend_warning": (
-            "⚠️ CẢNH BÁO: Mảng đường bộ của NĐ 100/2019 đã bị thay thế hoàn toàn\n"
-            "bởi Nghị định 168/2024/NĐ-CP và Nghị định 336/2025/NĐ-CP.\n"
-            "Nội dung còn lại trong file này CHỈ áp dụng cho đường sắt (nếu có).\n"
-        ),
-        # Từ khóa chỉ ĐƯỜNG SẮT — giữ lại
-        "include_section_keywords": ["đường sắt", "ray", "tàu hỏa", "ga đường sắt"],
-        # Từ khóa chỉ ĐƯỜNG BỘ — loại bỏ
-        "exclude_section_keywords": [
-            "đường bộ", "xe ô tô", "xe mô tô", "xe máy",
-            "người điều khiển phương tiện", "vi phạm giao thông đường bộ"
-        ],
+            "⚠️ LƯU Ý: Nghị định 143/2021/NĐ-CP sửa đổi, bổ sung một số điều "
+            "của Nghị định 88/2019/NĐ-CP về xử phạt VPHC trong lĩnh vực tiền tệ và ngân hàng.\n"
+        )
     },
-    "nd123_2021_xu_phat.pdf": {
-        "keep_all": False,
-        "prepend_warning": (
-            "⚠️ CẢNH BÁO: NĐ 123/2021 đã bị bãi bỏ một phần bởi NĐ 168/2024.\n"
-            "Nội dung còn hiệu lực trong file này CHỈ là mảng đường thủy nội địa\n"
-            "và hàng hải. Không dùng cho tư vấn về đường bộ.\n"
-        ),
-        "include_section_keywords": ["đường thủy", "hàng hải", "tàu thuyền", "cảng biển", "sông"],
-        "exclude_section_keywords": [
-            "đường bộ", "xe ô tô", "xe máy", "mô tô",
-            "giao thông đường bộ", "vi phạm giao thông"
-        ],
+    
+    # 5. Nghị định 86/2024/NĐ-CP: Trích lập dự phòng rủi ro và xử lý rủi ro TCTD
+    "nd86_2024_trich_lap_du_phong_rui_ro.pdf": {
+        "keep_all": True,
+    },
+    
+    # 6. Nghị định 26/2025/NĐ-CP: Chức năng, nhiệm vụ, quyền hạn NHNN
+    "nd26_2025_chuc_nang_nhiem_vu_nhnn.pdf": {
+        "keep_all": True,
+    },
+    
+    # 7. Nghị định 19/2023/NĐ-CP: Chi tiết Luật Phòng, chống rửa tiền
+    "nd19_2023_chi_tiet_luat_phong_chong_rua_tien.pdf": {
+        "keep_all": True,
     },
 }
 
 # ---------------------------------------------------------------------------
-# Regex
+# Regex làm sạch
 # ---------------------------------------------------------------------------
 RE_HEADER_NOISE  = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4},.*about:blank$", re.MULTILINE)
-RE_FOOTER_NOISE  = re.compile(r"about:blank\s+\d+/\d+|Thư viện pháp luật|Mã tra cứu", re.IGNORECASE)
+RE_FOOTER_NOISE  = re.compile(r"about:blank\s+\d+/\d+|Thư viện pháp luật|Mã tra cứu|CỔNG THÔNG TIN ĐIỆN TỬ", re.IGNORECASE)
 RE_PAGE_NUM      = re.compile(r"^(Trang\s+)?\d+(\s*/\s*\d+)?$", re.IGNORECASE)
 RE_FORM_DOTS     = re.compile(r"(\.{5,}|_{5,})")
 RE_CHECKBOX      = re.compile(r"([☐☑\uf06f])")
+
+# Tiêu đề cấu trúc văn bản quy phạm pháp luật Ngân hàng
 RE_IS_HEADING    = re.compile(
-    r"^(Điều\s+\d+|Khoản\s+\d+|Chương\s+[IVXLCDM]+|Phần\s+[IVXLCDM]+|"
+    r"^(Phần\s+[IVXLCDM]+|Chương\s+[IVXLCDM]+|Mục\s+\d+|Điều\s+\d+|Khoản\s+\d+|"
     r"\d+\.\s+[A-ZĐÀÁẠẢÃ]|[a-z]\)\s+)",
     re.IGNORECASE
 )
+
+# Ký tự nối dòng hợp lệ
 RE_MERGE_END     = re.compile(
     r'[a-zA-ZáàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđĐ,;]$'
 )
 
 # ---------------------------------------------------------------------------
-# Lọc block theo từ khóa (per-file strategy)
+# Lọc block theo từ khóa (Dành cho strategy nâng cao nếu cần)
 # ---------------------------------------------------------------------------
 def should_keep_block(text: str, strategy: dict) -> bool:
-    """
-    Quyết định giữ hay bỏ một block text dựa trên include/exclude keywords.
-    Logic: block phải có ít nhất 1 include_keyword VÀ không có exclude_keyword.
-    """
     if strategy.get("keep_all", True):
         return True
 
@@ -165,13 +143,11 @@ def should_keep_block(text: str, strategy: dict) -> bool:
     include_kws = strategy.get("include_section_keywords", [])
     exclude_kws = strategy.get("exclude_section_keywords", [])
 
-    # Nếu có include list: phải match ít nhất 1
     if include_kws:
         has_include = any(kw in text_lower for kw in include_kws)
         if not has_include:
             return False
 
-    # Nếu có exclude list: không được chứa bất kỳ từ nào
     if exclude_kws:
         has_exclude = any(kw in text_lower for kw in exclude_kws)
         if has_exclude:
@@ -195,6 +171,7 @@ def clean_text(raw_text: str, strategy: dict | None = None) -> str:
         line = line.strip()
         if not line:
             continue
+
         if RE_HEADER_NOISE.match(line):  continue
         if RE_FOOTER_NOISE.search(line): continue
         if RE_PAGE_NUM.match(line):       continue
@@ -204,19 +181,18 @@ def clean_text(raw_text: str, strategy: dict | None = None) -> str:
         if line in ("", "[Cần điền thông tin]", "[Lựa chọn]"):
             continue
 
-        # Định dạng phân cấp
+        # Định dạng phân cấp Markdown chuẩn
         line = re.sub(r"^(Chương\s+[IVXLCDM]+.*|Phần\s+[IVXLCDM]+.*)$",
                       r"# \1", line, flags=re.IGNORECASE)
-        line = re.sub(r"^(Điều\s+\d+[.:].*)",
-                      lambda m: "## " + m.group(0).lstrip("# "),
+        line = re.sub(r"^(Mục\s+\d+.*)$",
+                      r"## \1", line, flags=re.IGNORECASE)
+        line = re.sub(r"^(Điều\s+\d+[.:].*|## Điều\s+\d+[.:].*)",
+                      lambda m: "### " + m.group(0).lstrip("# "),
                       line, flags=re.IGNORECASE)
 
         # Bôi đậm ngày tháng
         line = re.sub(r"(ngày\s+\d{1,2}\s+tháng\s+\d{1,2}\s+năm\s+\d{4})",
                       r"**\1**", line, flags=re.IGNORECASE)
-
-        # LaTeX kỹ thuật
-        line = re.sub(r"\b(CO2?|HC|NOx|PM2\.5|mg/l)\b", r"$$\1$$", line)
 
         cleaned_lines.append(line)
 
@@ -245,11 +221,7 @@ def clean_text(raw_text: str, strategy: dict | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Bảng → Markdown
 # ---------------------------------------------------------------------------
-def table_to_markdown(table_data: list, annotate_diem_tru: bool = False) -> str:
-    """
-    Chuyển bảng sang Markdown.
-    annotate_diem_tru=True: thêm cột ghi chú điểm trừ nếu phát hiện (nd168).
-    """
+def table_to_markdown(table_data: list) -> str:
     if not table_data:
         return ""
     table_data = [r for r in table_data if any(c and str(c).strip() for c in r)]
@@ -306,18 +278,17 @@ def process_pdfs():
     CLEANED_DIR.mkdir(parents=True, exist_ok=True)
 
     pdf_files = list(RAW_DIR.glob("*.pdf"))
-    logger.info(f"Tìm thấy {len(pdf_files)} file nghị định trong {RAW_DIR}")
+    logger.info(f"Tìm thấy {len(pdf_files)} file Nghị định Ngân hàng trong {RAW_DIR}")
 
     stats = {"total": len(pdf_files), "processed": 0, "skipped": 0, "errors": 0, "files": {}}
 
-    for pdf_path in tqdm(pdf_files, desc="Xử lý Nghị định", unit="file"):
+    for pdf_path in tqdm(pdf_files, desc="Xử lý Nghị định Ngân hàng", unit="file"):
         if pdf_path.name in EXCLUDED_FILES:
-            logger.info(f"  [SKIP] {pdf_path.name}")
+            logger.info(f"  [SKIP] {pdf_path.name} — nằm trong danh sách loại trừ")
             stats["skipped"] += 1
             continue
 
         strategy     = FILE_STRATEGIES.get(pdf_path.name, {"keep_all": True})
-        annotate_dt  = strategy.get("annotate_diem_tru", False)
         full_content = []
         page_count = table_count = char_count = filtered_blocks = 0
 
@@ -326,13 +297,12 @@ def process_pdfs():
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 page_count = len(pdf.pages)
-                for page in tqdm(pdf.pages, desc=f"  {pdf_path.stem}", leave=False):
+                for page in tqdm(pdf.pages, desc=f"   Trang {pdf_path.stem}", leave=False):
                     strict = {"vertical_strategy": "lines", "horizontal_strategy": "lines",
                               "snap_tolerance": 3, "join_tolerance": 3}
 
                     bboxes = get_table_bboxes(page)
 
-                    # Text không chứa vùng bảng
                     if bboxes:
                         filtered_page = page.filter(lambda o: not is_inside_table(o, bboxes))
                         page_text = filtered_page.extract_text()
@@ -342,16 +312,14 @@ def process_pdfs():
                     if page_text:
                         cleaned = clean_text(page_text, strategy)
                         if cleaned:
-                            # Lọc theo strategy keywords
                             if should_keep_block(cleaned, strategy):
                                 full_content.append(cleaned)
                                 char_count += len(cleaned)
                             else:
                                 filtered_blocks += 1
 
-                    # Bảng
                     for table in page.extract_tables(table_settings=strict):
-                        md = table_to_markdown(table, annotate_diem_tru=annotate_dt)
+                        md = table_to_markdown(table)
                         if md:
                             full_content.append("\n\n" + md + "\n\n")
                             table_count += 1
@@ -367,15 +335,14 @@ def process_pdfs():
                 "chars": char_count, "filtered_blocks": filtered_blocks
             }
             logger.info(
-                f"   ✓ {out_name} | {page_count}tr | {table_count}bảng | "
+                f"    ✓ {out_name} | {page_count}tr | {table_count}bảng | "
                 f"{char_count:,}ký tự | {filtered_blocks} blocks bị lọc"
             )
 
         except Exception as e:
-            logger.error(f"   ✗ Lỗi {pdf_path.name}: {e}", exc_info=True)
+            logger.error(f"    ✗ Lỗi {pdf_path.name}: {e}", exc_info=True)
             stats["errors"] += 1
 
-    # Stats
     logger.info("\n" + "="*60)
     logger.info(f"KẾT QUẢ: {stats['processed']} thành công | {stats['skipped']} bỏ qua | {stats['errors']} lỗi")
     stats_path = CLEANED_DIR / "_processing_stats.json"
