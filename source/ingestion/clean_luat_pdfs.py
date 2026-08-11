@@ -37,7 +37,7 @@ def get_base_dir() -> Path:
     except NameError:
         return Path(".").resolve().parent.parent
 
-BASE_DIR = get_base_dir()
+BASE_DIR         = get_base_dir()
 RAW_LUAT_DIR     = BASE_DIR / "Data" / "raw"     / "luat"
 CLEANED_LUAT_DIR = BASE_DIR / "Data" / "cleaned" / "luat"
 LOG_DIR          = BASE_DIR / "logs"
@@ -61,37 +61,59 @@ def setup_logging():
 logger = setup_logging()
 
 # ---------------------------------------------------------------------------
-# Blacklist — Các file PDF KHÔNG xử lý (Danh sách cho ngành Ngân hàng)
+# Blacklist — Các file PDF KHÔNG xử lý hoặc bị loại bỏ
 # ---------------------------------------------------------------------------
 EXCLUDED_FILES = {
-    "luat_cac_tctd_2010_het_hieu_luc.pdf", # Ví dụ: Luật TCTD 2010 đã hết hiệu lực hoàn toàn
+    # Ví dụ: Luật Các TCTD 2010 cũ đã hết hiệu lực hoàn toàn từ 01/07/2024
+    "luat_47_2010_qh12_cac_to_chuc_tin_dung_het_hieu_luc.pdf",
 }
 
 # ---------------------------------------------------------------------------
-# Per-file strategy — Logic xử lý riêng từng văn bản Ngân hàng
+# Per-file strategy cho Hệ thống Luật Ngân hàng - Tài chính
 # ---------------------------------------------------------------------------
 FILE_STRATEGIES = {
-    # Luật Các tổ chức tín dụng 2024 (Mới nhất)
-    "luat_cac_tctd_2024.pdf": {"keep_all": True},
-    # Luật Ngân hàng Nhà nước Việt Nam
-    "luat_nhnn_2010.pdf": {"keep_all": True},
-    # Phiên bản cũ tra cứu lịch sử (nếu có)
-    "luat_cac_tctd_2010_inactive.pdf": {
+    # 1. Luật Ngân hàng Nhà nước Việt Nam (46/2010/QH12)
+    "luat_46_2010_qh12_ngan_hang_nha_nuoc.pdf": {
+        "keep_all": True,
+    },
+    
+    # 2. Luật Các tổ chức tín dụng (32/2024/QH15)
+    "luat_32_2024_qh15_cac_to_chuc_tin_dung.pdf": {
+        "keep_all": True,
+    },
+    
+    # 3. Luật Sửa đổi, bổ sung một số điều của Luật Đất đai, Luật Nhà ở, 
+    #    Luật Kinh doanh BĐS và Luật Các TCTD (43/2024/QH15)
+    "luat_43_2024_qh15_sua_doi_cac_luat.pdf": {
         "keep_all": True,
         "prepend_warning": (
-            "⚠️ LƯU Ý: VĂN BẢN NÀY ĐÃ HẾT HIỆU LỰC KỂ TỪ 01/07/2024.\n"
-            "Luật Các TCTD 2010 được thay thế bởi Luật Các tổ chức tín dụng 2024 (Luật số 32/2024/QH15).\n"
-            "Chỉ sử dụng văn bản này cho mục đích tra cứu lịch sử pháp lý.\n"
+            "⚠️ LƯU Ý: Luật 43/2024/QH15 sửa đổi, bổ sung hiệu lực và một số điều của "
+            "Luật Đất đai 31/2024/QH15, Luật Nhà ở 27/2023/QH15, Luật Kinh doanh BĐS 29/2023/QH15 "
+            "và Luật Các TCTD 32/2024/QH15 (có hiệu lực từ 01/08/2024).\n"
         )
+    },
+    
+    # 4. Luật Sửa đổi, bổ sung một số điều của Luật Các TCTD (96/2025/QH15)
+    "luat_96_2025_qh15_sua_doi_luat_tctd.pdf": {
+        "keep_all": True,
+        "prepend_warning": (
+            "⚠️ LƯU Ý: Luật 96/2025/QH15 bổ sung, sửa đổi một số điều của "
+            "Luật Các tổ chức tín dụng 32/2024/QH15 (có hiệu lực từ 15/10/2025).\n"
+        )
+    },
+    
+    # 5. Luật Phòng, chống rửa tiền (14/2022/QH15)
+    "luat_14_2022_qh15_phong_chong_rua_tien.pdf": {
+        "keep_all": True,
     },
 }
 
 # ---------------------------------------------------------------------------
 # Regex làm sạch
 # ---------------------------------------------------------------------------
-RE_HEADER_NOISE  = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4},.*about:blank$",      re.MULTILINE)
+RE_HEADER_NOISE  = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4},.*about:blank$", re.MULTILINE)
 RE_FOOTER_NOISE  = re.compile(r"about:blank\s+\d+/\d+|Thư viện pháp luật|Mã tra cứu|CỔNG THÔNG TIN ĐIỆN TỬ", re.IGNORECASE)
-RE_PAGE_NUM      = re.compile(r"^(Trang\s+)?\d+(\s*/\s*\d+)?$",               re.IGNORECASE)
+RE_PAGE_NUM      = re.compile(r"^(Trang\s+)?\d+(\s*/\s*\d+)?$", re.IGNORECASE)
 RE_FORM_DOTS     = re.compile(r"(\.{5,}|_{5,})")
 RE_CHECKBOX      = re.compile(r"([☐☑\uf06f])")
 
